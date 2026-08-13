@@ -15,6 +15,7 @@ export type FetchLike = (url: string, init?: RequestInit) => Promise<{
 interface DependencyRef {
   name: string;
   versionSpec: string;
+  resolvedVersion?: string;
   ecosystem: "npm" | "PyPI";
   manifestFile: string;
 }
@@ -46,7 +47,11 @@ function extractConcreteVersion(spec: string): string | null {
   return match ? match[1] : null;
 }
 
-function parsePackageJsonDeps(content: string, manifestFile: string): DependencyRef[] {
+function parsePackageJsonDeps(
+  content: string,
+  manifestFile: string,
+  lockVersions?: Map<string, string>,
+): DependencyRef[] {
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(content);
@@ -60,10 +65,47 @@ function parsePackageJsonDeps(content: string, manifestFile: string): Dependency
     const entries = parsed[section];
     if (!entries || typeof entries !== "object") continue;
     for (const [name, versionSpec] of Object.entries(entries as Record<string, string>)) {
-      deps.push({ name, versionSpec, ecosystem: "npm", manifestFile });
+      deps.push({ name, versionSpec, resolvedVersion: lockVersions?.get(name), ecosystem: "npm", manifestFile });
     }
   }
   return deps;
+}
+
+/**
+ * Extracts the top-level (hoisted) resolved version for each direct
+ * dependency from a package-lock.json, so we check what's actually
+ * installed instead of guessing from the manifest's semver range (e.g.
+ * "^2.5.1" is not a concrete version — npm may have resolved it to 2.9.0).
+ * Only top-level entries are read; nested/duplicated transitive
+ * resolutions are intentionally ignored to keep this a direct-dependency
+ * check, consistent with what package.json declares.
+ */
+function parsePackageLockVersions(content: string): Map<string, string> {
+  const versions = new Map<string, string>();
+  let parsed: {
+    packages?: Record<string, { version?: string }>;
+    dependencies?: Record<string, { version?: string }>;
+  };
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return versions;
+  }
+
+  if (parsed.packages) {
+    for (const [pkgPath, pkg] of Object.entries(parsed.packages)) {
+      if (!pkg.version) continue;
+      const match = pkgPath.match(/^node_modules\/(@[^/]+\/[^/]+|[^/]+)$/);
+      if (!match) continue;
+      versions.set(match[1], pkg.version);
+    }
+  } else if (parsed.dependencies) {
+    for (const [name, info] of Object.entries(parsed.dependencies)) {
+      if (info.version) versions.set(name, info.version);
+    }
+  }
+
+  return versions;
 }
 
 function parseRequirementsTxt(content: string, manifestFile: string): DependencyRef[] {
@@ -80,13 +122,27 @@ function parseRequirementsTxt(content: string, manifestFile: string): Dependency
   return deps;
 }
 
-export function findDependencyManifests(files: WalkedFile[]): DependencyRef[] {
-  const deps: DependencyRef[] = [];
+function dirOf(normalizedPath: string, base: string): string {
+  return normalizedPath.slice(0, normalizedPath.length - base.length);
+}
 
+export function findDependencyManifests(files: WalkedFile[]): DependencyRef[] {
+  const lockVersionsByDir = new Map<string, Map<string, string>>();
   for (const file of files) {
-    const base = file.relativePath.replace(/\\/g, "/").split("/").pop() ?? "";
+    const normalizedPath = file.relativePath.replace(/\\/g, "/");
+    const base = normalizedPath.split("/").pop() ?? "";
+    if (base === "package-lock.json" || base === "npm-shrinkwrap.json") {
+      lockVersionsByDir.set(dirOf(normalizedPath, base), parsePackageLockVersions(file.content));
+    }
+  }
+
+  const deps: DependencyRef[] = [];
+  for (const file of files) {
+    const normalizedPath = file.relativePath.replace(/\\/g, "/");
+    const base = normalizedPath.split("/").pop() ?? "";
     if (base === "package.json") {
-      deps.push(...parsePackageJsonDeps(file.content, file.relativePath));
+      const lockVersions = lockVersionsByDir.get(dirOf(normalizedPath, base));
+      deps.push(...parsePackageJsonDeps(file.content, file.relativePath, lockVersions));
     } else if (base === "requirements.txt") {
       deps.push(...parseRequirementsTxt(file.content, file.relativePath));
     }
@@ -190,8 +246,8 @@ export async function scanDependencies(
 ): Promise<Finding[]> {
   const deps = findDependencyManifests(files);
   const resolvable = deps
-    .map((dep) => ({ dep, version: extractConcreteVersion(dep.versionSpec) }))
-    .filter((entry): entry is { dep: DependencyRef; version: string } => entry.version !== null);
+    .map((dep) => ({ dep, version: dep.resolvedVersion ?? extractConcreteVersion(dep.versionSpec) }))
+    .filter((entry): entry is { dep: DependencyRef; version: string } => Boolean(entry.version));
 
   const results = await runWithConcurrency(resolvable, CONCURRENCY, async ({ dep, version }) => {
     const vulns = await queryOsvWithTimeout(fetchImpl, dep, version);

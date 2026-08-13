@@ -35,6 +35,53 @@ describe("findDependencyManifests", () => {
       ]),
     );
   });
+
+  it("prefers the resolved version from package-lock.json over the manifest range", () => {
+    const manifest = makeFile(JSON.stringify({ dependencies: { yaml: "^2.5.1" } }), "package.json");
+    const lock = makeFile(
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: {
+          "": { name: "app" },
+          "node_modules/yaml": { version: "2.9.0" },
+        },
+      }),
+      "package-lock.json",
+    );
+
+    const deps = findDependencyManifests([manifest, lock]);
+    expect(deps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "yaml", versionSpec: "^2.5.1", resolvedVersion: "2.9.0" }),
+      ]),
+    );
+  });
+
+  it("falls back to the manifest range when there is no lockfile", () => {
+    const manifest = makeFile(JSON.stringify({ dependencies: { yaml: "^2.5.1" } }), "package.json");
+
+    const deps = findDependencyManifests([manifest]);
+    expect(deps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "yaml", versionSpec: "^2.5.1", resolvedVersion: undefined }),
+      ]),
+    );
+  });
+
+  it("reads resolved versions from a lockfileVersion 1 style lockfile", () => {
+    const manifest = makeFile(JSON.stringify({ dependencies: { yaml: "^2.5.1" } }), "package.json");
+    const lock = makeFile(
+      JSON.stringify({ dependencies: { yaml: { version: "2.9.0" } } }),
+      "package-lock.json",
+    );
+
+    const deps = findDependencyManifests([manifest, lock]);
+    expect(deps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "yaml", resolvedVersion: "2.9.0" }),
+      ]),
+    );
+  });
 });
 
 describe("scanDependencies", () => {
@@ -91,5 +138,22 @@ describe("scanDependencies", () => {
     const findings = await scanDependencies([file], fetchMock);
     expect(findings).toHaveLength(0);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("queries OSV with the lockfile-resolved version, not the manifest range's guess", async () => {
+    const manifest = makeFile(JSON.stringify({ dependencies: { yaml: "^2.5.1" } }), "package.json");
+    const lock = makeFile(
+      JSON.stringify({ lockfileVersion: 3, packages: { "node_modules/yaml": { version: "2.9.0" } } }),
+      "package-lock.json",
+    );
+
+    const fetchMock: FetchLike = vi.fn(async (_url, init) => {
+      const body = JSON.parse((init?.body as string) ?? "{}");
+      expect(body.version).toBe("2.9.0");
+      return { ok: true, status: 200, json: async () => ({ vulns: [] }) };
+    });
+
+    await scanDependencies([manifest, lock], fetchMock);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
