@@ -3,7 +3,14 @@ import { readFileSync } from "node:fs";
 import { Command } from "commander";
 import { runScan } from "../core/scanner.js";
 import { PromptRulesEngine } from "../core/promptScanner.js";
-import { printJsonReport, printPromptJsonReport, printPromptReport, printTextReport } from "./reporter.js";
+import { applyFixes, ensureCleanGitTree } from "../core/fixer.js";
+import {
+  printFixSummary,
+  printJsonReport,
+  printPromptJsonReport,
+  printPromptReport,
+  printTextReport,
+} from "./reporter.js";
 import type { Severity } from "../core/types.js";
 
 const SEVERITY_RANK: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -27,27 +34,59 @@ program
     `severidad minima que hace fallar el comando (${SEVERITY_VALUES.join("|")})`,
     "high",
   )
-  .action(async (path: string, opts: { json: boolean; deps: boolean; failOn: string }) => {
-    const failOn = opts.failOn as Severity;
-    if (!SEVERITY_VALUES.includes(failOn)) {
-      console.error(`Valor invalido para --fail-on: "${opts.failOn}". Usa uno de: ${SEVERITY_VALUES.join(", ")}`);
-      process.exitCode = 2;
-      return;
-    }
+  .option("--fix", "aplica automaticamente los fixes seguros disponibles (bump de dependencias, CORS wildcard)", false)
+  .option("--dry-run", "con --fix, muestra los cambios sin aplicarlos", false)
+  .action(
+    async (path: string, opts: { json: boolean; deps: boolean; failOn: string; fix: boolean; dryRun: boolean }) => {
+      const failOn = opts.failOn as Severity;
+      if (!SEVERITY_VALUES.includes(failOn)) {
+        console.error(`Valor invalido para --fail-on: "${opts.failOn}". Usa uno de: ${SEVERITY_VALUES.join(", ")}`);
+        process.exitCode = 2;
+        return;
+      }
 
-    const result = await runScan({ targetPath: path, skipDependencyCheck: !opts.deps });
+      const result = await runScan({ targetPath: path, skipDependencyCheck: !opts.deps });
 
-    if (opts.json) {
-      printJsonReport(result);
-    } else {
-      printTextReport(result);
-    }
+      if (!opts.fix) {
+        if (opts.json) {
+          printJsonReport(result);
+        } else {
+          printTextReport(result);
+        }
+        const hasBlockingFinding = result.findings.some(
+          (finding) => SEVERITY_RANK[finding.severity] <= SEVERITY_RANK[failOn],
+        );
+        process.exitCode = hasBlockingFinding ? 1 : 0;
+        return;
+      }
 
-    const hasBlockingFinding = result.findings.some(
-      (finding) => SEVERITY_RANK[finding.severity] <= SEVERITY_RANK[failOn],
-    );
-    process.exitCode = hasBlockingFinding ? 1 : 0;
-  });
+      if (!opts.dryRun) {
+        const gitCheck = ensureCleanGitTree(path);
+        if (!gitCheck.ok) {
+          console.error(gitCheck.reason);
+          process.exitCode = 2;
+          return;
+        }
+      }
+
+      const outcomes = applyFixes(result.findings, path, { dryRun: opts.dryRun });
+      for (const outcome of outcomes) {
+        outcome.finding.fixStatus = outcome.fixStatus;
+      }
+
+      if (opts.json) {
+        printJsonReport(result);
+      } else {
+        printTextReport(result);
+        printFixSummary(outcomes, opts.dryRun);
+      }
+
+      const hasBlockingFinding = result.findings.some(
+        (finding) => finding.fixStatus !== "applied" && SEVERITY_RANK[finding.severity] <= SEVERITY_RANK[failOn],
+      );
+      process.exitCode = hasBlockingFinding ? 1 : 0;
+    },
+  );
 
 program
   .command("check-prompt")

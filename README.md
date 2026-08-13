@@ -79,6 +79,43 @@ El comando devuelve `1` si encuentra hallazgos de severidad igual o mayor a
 `--fail-on` (por defecto `high`), lo que lo hace util como pre-commit hook o
 como gate de CI.
 
+### Fixes automaticos (`--fix`)
+
+```bash
+# muestra que se arreglaria, sin tocar nada
+node dist/cli/index.js scan . --fix --dry-run
+
+# aplica los fixes seguros de verdad
+node dist/cli/index.js scan . --fix
+```
+
+`--fix` **solo** toca dos tipos de hallazgo, elegidos porque tienen un
+arreglo mecanico y sin ambiguedad:
+
+- **Dependencias vulnerables**: si OSV reporta una version que resuelve la
+  vulnerabilidad, y esa version ya esta permitida por el rango del
+  `package.json` (ej. `^2.5.1` ya permite `2.8.3`), te dice que corras
+  `npm install` de nuevo — no hace falta tocar el archivo. Si el rango es
+  mas angosto que el fix (ej. `~2.5.1`), lo actualiza. Si el fix implica
+  cruzar una version mayor, **no** se auto-aplica: queda marcado para
+  revision manual, porque puede traer breaking changes.
+- **CORS abierto** (`origin: '*'` en la forma de objeto de config, ej. del
+  paquete `cors`): se reemplaza por un placeholder que bloquea todo origen
+  hasta que pongas los dominios reales — nunca abre algo que estaba
+  cerrado. La variante de header crudo (`res.setHeader('Access-Control-Allow-Origin', '*')`)
+  no se toca, porque reescribirla con seguridad necesita mas contexto del
+  que un regex puede garantizar.
+
+**Todo lo demas** (secrets, SQL/command injection, `eval`, contrasenas en
+texto plano, JWT sin verificar) se sigue reportando solo con su
+`fixSuggestion` en prosa — no existe un arreglo automatico seguro para esas
+categorias, así que `--fix` nunca las toca.
+
+`--fix` (sin `--dry-run`) exige que el directorio escaneado sea un repo git
+con el arbol de trabajo limpio (`git status` sin cambios pendientes), para
+que cualquier fix se pueda revertir con `git checkout -- .` si algo sale
+mal. `--dry-run` no tiene esa restriccion, porque no escribe nada.
+
 ### Ignorar archivos o carpetas
 
 Crea un archivo `.copilotoignore` en la raiz de lo que estas escaneando,

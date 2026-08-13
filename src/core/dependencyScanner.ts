@@ -1,4 +1,5 @@
-import type { Finding, Severity } from "./types.js";
+import semver from "semver";
+import type { Finding, FixDescriptor, Severity } from "./types.js";
 import type { WalkedFile } from "./fileWalker.js";
 
 const OSV_QUERY_URL = "https://api.osv.dev/v1/query";
@@ -25,6 +26,22 @@ interface OsvSeverityEntry {
   score: string;
 }
 
+interface OsvAffectedRangeEvent {
+  introduced?: string;
+  fixed?: string;
+  last_affected?: string;
+}
+
+interface OsvAffectedRange {
+  type: string;
+  events: OsvAffectedRangeEvent[];
+}
+
+interface OsvAffected {
+  package?: { name?: string; ecosystem?: string };
+  ranges?: OsvAffectedRange[];
+}
+
 interface OsvVuln {
   id: string;
   summary?: string;
@@ -32,6 +49,7 @@ interface OsvVuln {
   severity?: OsvSeverityEntry[];
   database_specific?: { severity?: string };
   references?: { url: string }[];
+  affected?: OsvAffected[];
 }
 
 interface OsvQueryResponse {
@@ -222,6 +240,96 @@ async function runWithConcurrency<T, R>(
   return results;
 }
 
+function safeSemverCheck(check: () => boolean): boolean {
+  try {
+    return check();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Finds the version that resolves this specific vulnerability for the
+ * currently-installed version, by walking OSV's introduced/fixed event
+ * pairs. A single advisory can have several vulnerable windows (e.g. one
+ * for its 1.x line, one for its 2.x line) — we only care about the window
+ * that actually contains what's installed.
+ */
+function findFixedVersion(vuln: OsvVuln, ecosystem: DependencyRef["ecosystem"], currentVersion: string): string | null {
+  for (const affected of vuln.affected ?? []) {
+    if (affected.package?.ecosystem && affected.package.ecosystem !== ecosystem) continue;
+
+    for (const range of affected.ranges ?? []) {
+      if (range.type !== "SEMVER") continue;
+
+      let windowStart = "0.0.0";
+      for (const event of range.events) {
+        if (event.introduced !== undefined) {
+          windowStart = event.introduced === "0" ? "0.0.0" : event.introduced;
+        } else if (event.fixed !== undefined) {
+          const inWindow = safeSemverCheck(
+            () => semver.gte(currentVersion, windowStart) && semver.lt(currentVersion, event.fixed!),
+          );
+          if (inWindow) return event.fixed;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function buildBumpedSpec(originalSpec: string, fixedVersion: string): string {
+  const trimmed = originalSpec.trim();
+  if (trimmed.startsWith("^")) return `^${fixedVersion}`;
+  if (trimmed.startsWith("~")) return `~${fixedVersion}`;
+  if (/^\d/.test(trimmed)) return fixedVersion;
+  return `^${fixedVersion}`;
+}
+
+/**
+ * Only npm gets a fix descriptor: requirements.txt has no lockfile support
+ * here yet, and Python's version-specifier syntax (~=, ===, ...) doesn't
+ * map cleanly onto node-semver's range semantics, so guessing a fix there
+ * risks writing something wrong. PyPI findings keep the prose
+ * `fixSuggestion` only, same as before this feature existed.
+ */
+function computeDependencyFix(dep: DependencyRef, currentVersion: string, vuln: OsvVuln): FixDescriptor | undefined {
+  if (dep.ecosystem !== "npm") return undefined;
+
+  const fixedVersion = findFixedVersion(vuln, dep.ecosystem, currentVersion);
+  if (!fixedVersion) return undefined;
+
+  const satisfiesCurrentRange = safeSemverCheck(
+    () => semver.validRange(dep.versionSpec) !== null && semver.satisfies(fixedVersion, dep.versionSpec),
+  );
+
+  if (satisfiesCurrentRange) {
+    return {
+      strategy: "reinstall-dependency",
+      instructions: `Corré "npm install" de nuevo (o borrá node_modules/package-lock.json y reinstalá): tu package.json ya permite ${dep.name}@${fixedVersion}, que no esta afectado — solo falta que se vuelva a resolver.`,
+    };
+  }
+
+  const sameMajor = safeSemverCheck(
+    () => semver.valid(currentVersion) !== null && semver.major(currentVersion) === semver.major(fixedVersion),
+  );
+
+  if (!sameMajor) {
+    return {
+      strategy: "blocked-major-bump",
+      instructions: `Hay un fix en ${dep.name}@${fixedVersion} pero implica pasar a una version mayor distinta de la actual (${currentVersion}). Revisa el changelog antes de actualizar a mano.`,
+    };
+  }
+
+  const newVersionSpec = buildBumpedSpec(dep.versionSpec, fixedVersion);
+  return {
+    strategy: "bump-dependency-manifest",
+    instructions: `Se actualiza el rango en ${dep.manifestFile} a "${newVersionSpec}". Corré "npm install" despues para que se aplique.`,
+    search: `"${dep.name}": "${dep.versionSpec}"`,
+    replace: `"${dep.name}": "${newVersionSpec}"`,
+  };
+}
+
 function vulnToFinding(dep: DependencyRef, version: string, vuln: OsvVuln): Finding {
   const severity = mapSeverity(vuln);
   const summary = vuln.summary ?? vuln.details?.slice(0, 200) ?? "Vulnerabilidad conocida sin resumen disponible.";
@@ -237,6 +345,7 @@ function vulnToFinding(dep: DependencyRef, version: string, vuln: OsvVuln): Find
     file: dep.manifestFile,
     line: 1,
     snippet: `"${dep.name}": "${dep.versionSpec}"`,
+    fix: computeDependencyFix(dep, version, vuln),
   };
 }
 

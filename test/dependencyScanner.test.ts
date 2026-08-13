@@ -157,3 +157,103 @@ describe("scanDependencies", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("scanDependencies fix descriptors", () => {
+  function mockOsvVuln(fixed: string, introduced = "2.0.0") {
+    return {
+      id: "GHSA-test-fix",
+      summary: "Something bad",
+      affected: [
+        {
+          package: { name: "yaml", ecosystem: "npm" },
+          ranges: [{ type: "SEMVER", events: [{ introduced }, { fixed }] }],
+        },
+      ],
+    };
+  }
+
+  it("suggests reinstalling when the current range already permits the fixed version", async () => {
+    const file = makeFile(JSON.stringify({ dependencies: { yaml: "^2.5.1" } }), "package.json");
+    const fetchMock: FetchLike = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ vulns: [mockOsvVuln("2.8.3")] }),
+    }));
+
+    const findings = await scanDependencies([file], fetchMock);
+    expect(findings[0].fix).toEqual(
+      expect.objectContaining({ strategy: "reinstall-dependency" }),
+    );
+  });
+
+  it("bumps the manifest range when it's narrower than the fixed version but same major", async () => {
+    const file = makeFile(JSON.stringify({ dependencies: { yaml: "~2.5.1" } }), "package.json");
+    const fetchMock: FetchLike = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ vulns: [mockOsvVuln("2.8.3")] }),
+    }));
+
+    const findings = await scanDependencies([file], fetchMock);
+    expect(findings[0].fix).toEqual(
+      expect.objectContaining({
+        strategy: "bump-dependency-manifest",
+        search: '"yaml": "~2.5.1"',
+        replace: '"yaml": "~2.8.3"',
+      }),
+    );
+  });
+
+  it("blocks auto-fix when the fixed version crosses a major version boundary", async () => {
+    const file = makeFile(JSON.stringify({ dependencies: { yaml: "^2.5.1" } }), "package.json");
+    const fetchMock: FetchLike = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ vulns: [mockOsvVuln("3.0.0")] }),
+    }));
+
+    const findings = await scanDependencies([file], fetchMock);
+    expect(findings[0].fix).toEqual(
+      expect.objectContaining({ strategy: "blocked-major-bump" }),
+    );
+  });
+
+  it("omits fix info for PyPI dependencies", async () => {
+    const file = makeFile("flask==2.0.1\n", "requirements.txt");
+    const fetchMock: FetchLike = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        vulns: [
+          {
+            id: "GHSA-py-test",
+            summary: "bad",
+            affected: [
+              {
+                package: { name: "flask", ecosystem: "PyPI" },
+                ranges: [{ type: "SEMVER", events: [{ introduced: "2.0.0" }, { fixed: "2.0.3" }] }],
+              },
+            ],
+          },
+        ],
+      }),
+    }));
+
+    const findings = await scanDependencies([file], fetchMock);
+    expect(findings[0].fix).toBeUndefined();
+  });
+
+  it("omits fix info when OSV doesn't report an applicable fixed version", async () => {
+    const file = makeFile(JSON.stringify({ dependencies: { yaml: "^2.5.1" } }), "package.json");
+    const fetchMock: FetchLike = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        vulns: [{ id: "GHSA-no-fix", summary: "bad", affected: [] }],
+      }),
+    }));
+
+    const findings = await scanDependencies([file], fetchMock);
+    expect(findings[0].fix).toBeUndefined();
+  });
+});

@@ -1,7 +1,9 @@
 import { walkFiles } from "./fileWalker.js";
+import type { WalkedFile } from "./fileWalker.js";
 import { scanFileForSecrets } from "./secretsScanner.js";
 import { RulesEngine } from "./rulesEngine.js";
 import { scanDependencies } from "./dependencyScanner.js";
+import { computeCorsFix } from "./corsFix.js";
 import type { Finding, ScanResult } from "./types.js";
 
 export interface RunScanOptions {
@@ -30,6 +32,8 @@ export async function runScan(options: RunScanOptions): Promise<ScanResult> {
     findings.push(...(await scanDependencies(files)));
   }
 
+  attachCorsFixes(findings, files);
+
   findings.sort((a, b) => {
     const severityDiff = SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity];
     if (severityDiff !== 0) return severityDiff;
@@ -37,6 +41,20 @@ export async function runScan(options: RunScanOptions): Promise<ScanResult> {
   });
 
   return { findings, filesScanned: files.length };
+}
+
+function attachCorsFixes(findings: Finding[], files: WalkedFile[]): void {
+  const contentByPath = new Map(files.map((file) => [file.relativePath, file.content]));
+
+  for (const finding of findings) {
+    if (finding.ruleId !== "auth-cors-wildcard-credentials") continue;
+    const content = contentByPath.get(finding.file);
+    if (content === undefined) continue;
+    const line = content.split(/\r?\n/)[finding.line - 1];
+    if (line === undefined) continue;
+    const fix = computeCorsFix(line);
+    if (fix) finding.fix = fix;
+  }
 }
 
 export * from "./types.js";
