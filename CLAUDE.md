@@ -33,6 +33,10 @@ node dist/cli/index.js scan . --fix               # apply them (requires a clean
 node dist/cli/index.js check-prompt "<texto>"          # analyze a prompt before sending it to an AI coder
 node dist/cli/index.js check-prompt --file prompt.txt   # read prompt from a file (multi-line)
 echo "<texto>" | node dist/cli/index.js check-prompt    # or from stdin
+
+node dist/cli/index.js install-hook              # install a git pre-commit hook (scan --staged --fail-on high)
+node dist/cli/index.js install-hook --uninstall  # remove it again
+node dist/cli/index.js scan --staged             # scan only files staged in the git index (what the hook runs)
 ```
 
 CI (`.github/workflows/ci.yml`) runs type-check → test → build → dogfoods the built CLI against this repo itself (`scan . --fail-on high`), so a scan-breaking change to `rules/patterns.yaml` or the scanners can fail CI on its own output, not just on tests.
@@ -65,6 +69,15 @@ Separate pipeline from the `scan` command, for analyzing natural-language prompt
 - **`promptScanner.ts`** — `PromptRulesEngine`, structurally parallel to `rulesEngine.ts` but deliberately not the same engine: it loads `rules/prompt-patterns.yaml` (no `extensions` field — prompts aren't files) and, critically, normalizes each line (NFD-decompose + strip diacritics + lowercase via `normalizeForMatch`) before matching, so "validación" and "validacion" hit the same rule. Rule patterns in `prompt-patterns.yaml` are therefore written *without* accents. This normalization is prompt-specific and intentionally not applied to source-code scanning (it would be semantically wrong there). All findings get `category: "prompt"` and `file: "<prompt>"`.
 - Patterns combine an action verb (sacar/deshabilitar/desactivar/ignorar/bypass...) with a security concept, rather than matching a bare keyword — this avoids flagging legitimate questions like "¿por qué no anda la validación?".
 - `check-prompt` in `src/cli/index.ts` accepts the prompt as a positional arg, `--file <path>`, or stdin (in that priority order), and reuses the same `--fail-on`/exit-code convention as `scan` (default `high`). `printPromptReport`/`printPromptJsonReport` in `reporter.ts` render it (no file/line noise, since there's no real file).
+
+### Git pre-commit hook (`install-hook`, `scan --staged`)
+
+- **`src/core/git.ts`** — thin wrappers around `git rev-parse --show-toplevel`, `git diff --cached --name-only --diff-filter=ACMR`, and `git show :<path>`. Staged file content is read from the **index** (`git show :<path>`), not the working-tree copy, so scanning reflects exactly what a commit would capture — a file with a secret staged and then further edited (unstaged) still gets flagged; an already-fixed-and-staged file doesn't get flagged just because a later unstaged edit reintroduced the issue.
+- **`scan --staged`**: resolves the repo root, lists staged paths, filters them through the same `.copilotoignore`/binary-extension/size/binary-content gates `fileWalker.ts` applies during a normal walk (via now-exported `hasIgnoredExtension`/`isIgnored`/`loadIgnorePatterns`/`prepareContent`), and passes the resulting `WalkedFile[]` into `runScan` via its new `files` option — which, when present, is used instead of calling `walkFiles(targetPath)`. This is the mechanism that makes "scan only staged files" reusable outside the hook, not a hook-specific hack.
+- **`src/core/gitHook.ts`** (`installHook`/`uninstallHook`) — installs a POSIX-sh `pre-commit` script that runs `copiloto-cyber scan --staged --fail-on high`, honoring `COPILOTO_CYBER_SKIP=1` as a scoped bypass (skips only this check, unlike `git commit --no-verify` which skips every hook in the file) with a visible message either way. Installation is designed to never clobber existing hook setups (Husky, `pre-commit` framework, hand-written hooks):
+  - Resolves the real hooks directory via `git config core.hooksPath` first (falls back to `<git-dir>/hooks`), since Husky v9+ redirects hooks there (commonly `.husky/`) — writing straight to `.git/hooks/pre-commit` in that case would be a silent no-op.
+  - The block we own is wrapped in `# >>> copiloto-cyber >>> / <<< ... <<<` markers (same pattern nvm/conda use for shell rc files). No existing `pre-commit` file → write a fresh one. File exists without our markers → **append** the block, leaving the rest of the file untouched (hook scripts run top-to-bottom, so this composes with Husky/lint-staged/etc.). File already has our markers → replace just that block in place (idempotent re-install). `--uninstall` removes only the marked block, deleting the file only if nothing else remains in it.
+  - A local pre-commit hook is a fast-feedback convenience, not an enforcement boundary — it lives in the developer's own working copy and can be bypassed or deleted at will (`--no-verify`, `COPILOTO_CYBER_SKIP=1`, or just editing the file). CI (`scan . --fail-on high` in `.github/workflows/ci.yml`) remains the actual gate.
 
 ### Adding a new rule type
 

@@ -9,6 +9,11 @@ import type { Finding, ScanResult } from "./types.js";
 export interface RunScanOptions {
   targetPath: string;
   skipDependencyCheck?: boolean;
+  /**
+   * Pre-built file list to scan instead of walking `targetPath` (e.g. staged
+   * files read from the git index). When omitted, falls back to `walkFiles`.
+   */
+  files?: WalkedFile[];
 }
 
 const SEVERITY_ORDER: Record<Finding["severity"], number> = {
@@ -19,7 +24,7 @@ const SEVERITY_ORDER: Record<Finding["severity"], number> = {
 };
 
 export async function runScan(options: RunScanOptions): Promise<ScanResult> {
-  const files = walkFiles(options.targetPath);
+  const files = options.files ?? walkFiles(options.targetPath);
   const rulesEngine = new RulesEngine();
 
   const findings: Finding[] = [];

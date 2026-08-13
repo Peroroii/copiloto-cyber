@@ -32,7 +32,7 @@ export interface WalkedFile {
   content: string;
 }
 
-function hasIgnoredExtension(fileName: string): boolean {
+export function hasIgnoredExtension(fileName: string): boolean {
   const dot = fileName.lastIndexOf(".");
   if (dot === -1) return false;
   return BINARY_EXTENSIONS.has(fileName.slice(dot).toLowerCase());
@@ -44,6 +44,17 @@ function looksBinary(content: string): boolean {
     if (content.charCodeAt(i) === NUL_CHAR_CODE) return true;
   }
   return false;
+}
+
+/**
+ * Applies the same size/binary gate `walkFiles` uses when reading from disk,
+ * for callers (e.g. staged-file scanning) that already have content in hand
+ * from somewhere other than a direct file read.
+ */
+export function prepareContent(content: string): string | null {
+  if (Buffer.byteLength(content, "utf-8") > MAX_FILE_SIZE_BYTES) return null;
+  if (looksBinary(content)) return null;
+  return content;
 }
 
 function globToRegExp(pattern: string): RegExp {
@@ -66,12 +77,12 @@ function globToRegExp(pattern: string): RegExp {
   return new RegExp(`^${source}$`);
 }
 
-interface IgnorePattern {
+export interface IgnorePattern {
   regex: RegExp;
   matchesBasenameOnly: boolean;
 }
 
-function loadIgnorePatterns(rootPath: string): IgnorePattern[] {
+export function loadIgnorePatterns(rootPath: string): IgnorePattern[] {
   const ignoreFilePath = join(rootPath, IGNORE_FILE_NAME);
   if (!existsSync(ignoreFilePath)) return [];
 
@@ -89,7 +100,7 @@ function loadIgnorePatterns(rootPath: string): IgnorePattern[] {
   return patterns;
 }
 
-function isIgnored(relativePathPosix: string, patterns: IgnorePattern[]): boolean {
+export function isIgnored(relativePathPosix: string, patterns: IgnorePattern[]): boolean {
   const basename = relativePathPosix.split("/").pop() ?? relativePathPosix;
   return patterns.some((pattern) =>
     pattern.matchesBasenameOnly ? pattern.regex.test(basename) : pattern.regex.test(relativePathPosix),
