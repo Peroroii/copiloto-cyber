@@ -1,0 +1,4 @@
+# El directorio de tests contiene fixtures con secrets/patrones vulnerables
+# a proposito, para probar que el propio scanner los detecte. Se excluyen
+# del auto-scan (dogfooding en CI) para evitar falsos positivos esperados.
+test/

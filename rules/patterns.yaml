@@ -1,0 +1,135 @@
+# Reglas de patrones de codigo riesgoso.
+# Cada regla es un regex simple aplicado linea por linea sobre archivos
+# cuya extension matchee `extensions`. No reemplaza a un SAST completo:
+# prioriza pocos falsos positivos sobre cobertura exhaustiva.
+rules:
+  - id: injection-sql-template-literal
+    title: Posible SQL injection por template literal / concatenacion
+    category: injection
+    severity: high
+    extensions: [js, jsx, ts, tsx, mjs, cjs]
+    pattern: '(query|execute)\s*\(\s*(`[^`]*\$\{[^}]*\}[^`]*`|["''][^"'']*["'']\s*\+)'
+    description: >-
+      Estas armando una query SQL pegando un template literal o
+      concatenacion de strings con datos que probablemente vienen del
+      usuario. Si no se escapan, un atacante puede inyectar SQL propio.
+    fixSuggestion: >-
+      Usa placeholders parametrizados de tu driver/ORM (ej. `db.query('SELECT * FROM users WHERE id = ?', [id])`
+      o Prisma/Drizzle/Knex) en vez de armar el string a mano.
+
+  - id: injection-sql-fstring-python
+    title: Posible SQL injection por f-string en Python
+    category: injection
+    severity: high
+    extensions: [py]
+    pattern: '(execute|executemany)\s*\(\s*f["'']'
+    description: >-
+      Estas armando una query SQL con un f-string, lo que suele significar
+      que datos externos se insertan directo en el SQL sin escapar.
+    fixSuggestion: >-
+      Usa parametros con placeholders (`cursor.execute("SELECT * FROM t WHERE id = %s", (id,))`)
+      en vez de interpolar valores en el string de la query.
+
+  - id: injection-eval-usage
+    title: Uso de eval() con datos dinamicos
+    category: injection
+    severity: high
+    extensions: [js, jsx, ts, tsx, mjs, cjs]
+    pattern: '\beval\s*\('
+    description: >-
+      `eval()` ejecuta el string que le pases como codigo. Si ese string
+      incluye algo que controla el usuario, es ejecucion de codigo arbitrario.
+    fixSuggestion: >-
+      Casi nunca haga falta eval real. Reemplazalo por JSON.parse (si es
+      data), una funcion explicita, o un parser seguro para lo que estes tratando de lograr.
+
+  - id: injection-function-constructor
+    title: Uso de new Function() con datos dinamicos
+    category: injection
+    severity: high
+    extensions: [js, jsx, ts, tsx, mjs, cjs]
+    pattern: 'new\s+Function\s*\('
+    description: >-
+      `new Function(...)` compila un string como codigo JavaScript en tiempo
+      de ejecucion, igual de riesgoso que `eval`.
+    fixSuggestion: >-
+      Reemplazalo por una funcion normal o por logica explicita en vez de generar codigo dinamicamente.
+
+  - id: injection-child-process-exec
+    title: Comando de shell armado con datos dinamicos
+    category: injection
+    severity: critical
+    extensions: [js, jsx, ts, tsx, mjs, cjs]
+    pattern: '(exec|execSync)\s*\(\s*(`[^`]*\$\{[^}]*\}[^`]*`|[a-zA-Z_$][\w.]*\s*\+)'
+    description: >-
+      Estas llamando a `child_process.exec` con un comando armado por
+      concatenacion/template literal. Si algun pedazo viene del usuario, es
+      command injection: el atacante puede ejecutar comandos arbitrarios en el servidor.
+    fixSuggestion: >-
+      Usa `execFile`/`spawn` pasando el comando y los argumentos por separado
+      (sin armar un string de shell), o valida/allowlist estrictamente el input antes de usarlo.
+
+  - id: injection-os-system-python
+    title: os.system/subprocess con shell=True y datos dinamicos
+    category: injection
+    severity: critical
+    extensions: [py]
+    pattern: '(os\.system\s*\(\s*f["'']|subprocess\.\w+\([^)]*shell\s*=\s*True)'
+    description: >-
+      Estas ejecutando un comando de shell armado con datos dinamicos
+      (f-string) o con `shell=True`, lo que abre la puerta a command injection.
+    fixSuggestion: >-
+      Pasa el comando como lista de argumentos (`subprocess.run(["ls", path])`) sin `shell=True`,
+      y valida cualquier input externo antes de usarlo.
+
+  - id: injection-dangerous-html
+    title: HTML dinamico sin sanitizar (posible XSS)
+    category: injection
+    severity: high
+    extensions: [js, jsx, ts, tsx]
+    pattern: '(dangerouslySetInnerHTML|\.innerHTML\s*=)\s*[^;]*\$\{'
+    description: >-
+      Estas insertando HTML armado con datos dinamicos directo en el DOM.
+      Si esos datos vienen del usuario, un atacante puede inyectar scripts (XSS).
+    fixSuggestion: >-
+      Sanitiza el HTML con una libreria como DOMPurify antes de insertarlo,
+      o evita innerHTML/dangerouslySetInnerHTML y renderiza el contenido como texto/con el framework.
+
+  - id: auth-cors-wildcard-credentials
+    title: CORS abierto a cualquier origen
+    category: auth
+    severity: medium
+    extensions: [js, jsx, ts, tsx, mjs, cjs, py]
+    pattern: '(Access-Control-Allow-Origin["'']?\s*[:,]\s*["'']\*|origin\s*:\s*["'']\*["''])'
+    description: >-
+      Estas permitiendo CORS desde cualquier origen (`*`). Combinado con
+      cookies/credenciales, esto puede permitir que otros sitios lean respuestas de tu API en nombre del usuario.
+    fixSuggestion: >-
+      Restringi `Access-Control-Allow-Origin` a una lista explicita de dominios permitidos,
+      y evita `*` si tu API usa cookies o headers de autenticacion.
+
+  - id: auth-jwt-verify-disabled
+    title: Verificacion de JWT desactivada o algoritmo none
+    category: auth
+    severity: critical
+    extensions: [js, jsx, ts, tsx, mjs, cjs, py]
+    pattern: '(algorithms?\s*[:=]\s*\[?["'']none["'']|verify\s*[:=]\s*false|jwt\.decode\([^)]*verify\s*=\s*False)'
+    description: >-
+      Estas decodificando un JWT sin verificar su firma (algoritmo `none` o
+      `verify=false`). Esto permite que cualquiera fabrique un token valido a mano.
+    fixSuggestion: >-
+      Verifica siempre la firma con un algoritmo especifico (ej. `HS256`/`RS256`) y una
+      clave/secreto conocido; nunca aceptes `alg: none` ni desactives la verificacion.
+
+  - id: auth-plaintext-password-compare
+    title: Comparacion de contrasenas en texto plano
+    category: auth
+    severity: high
+    extensions: [js, jsx, ts, tsx, mjs, cjs, py]
+    pattern: '(password|contrasena|senha)\s*===?\s*[a-zA-Z_$][\w.]*\.(password|senha)'
+    description: >-
+      Estas comparando contrasenas directamente (`===`) en vez de usar un
+      hash. Esto suele indicar que las contrasenas se guardan en texto plano, lo cual es gravisimo si la base se filtra.
+    fixSuggestion: >-
+      Guarda las contrasenas hasheadas con bcrypt/argon2 y compara con la funcion de verificacion
+      de esa libreria (ej. `bcrypt.compare(password, user.passwordHash)`), nunca en texto plano.

@@ -1,0 +1,43 @@
+{
+  "name": "copiloto-cyber",
+  "version": "0.1.0",
+  "description": "Copiloto de ciberseguridad para vibecoding: escanea tu codigo en busca de secrets, inyecciones y dependencias vulnerables antes de que sea un problema.",
+  "type": "module",
+  "bin": {
+    "copiloto-cyber": "./dist/cli/index.js"
+  },
+  "main": "./dist/core/index.js",
+  "files": [
+    "dist",
+    "rules"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "scan": "tsx src/cli/index.ts scan"
+  },
+  "keywords": [
+    "security",
+    "sast",
+    "secrets",
+    "vibecoding",
+    "cli"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "picocolors": "^1.1.1",
+    "yaml": "^2.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.10"
+  }
+}
