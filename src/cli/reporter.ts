@@ -20,6 +20,7 @@ const CATEGORY_LABEL: Record<Finding["category"], string> = {
   injection: "inyeccion",
   auth: "autenticacion",
   dependency: "dependencia vulnerable",
+  prompt: "riesgo en el prompt",
 };
 
 function printFinding(finding: Finding): void {
@@ -67,6 +68,48 @@ export function printTextReport(result: ScanResult): void {
 
 export function printJsonReport(result: ScanResult): void {
   console.log(JSON.stringify(result, null, 2));
+}
+
+function printPromptFinding(finding: Finding): void {
+  console.log(
+    `${SEVERITY_EMOJI[finding.severity]} ${SEVERITY_LABEL[finding.severity]}  ${pc.bold(finding.title)}`,
+  );
+  if (finding.snippet) {
+    console.log(`   ${pc.dim("│")} ${pc.dim(finding.snippet)}`);
+  }
+  console.log(`   ${finding.description}`);
+  console.log(`   ${pc.cyan("→ en vez de eso:")} ${finding.fixSuggestion}`);
+  console.log("");
+}
+
+export function printPromptReport(findings: Finding[]): void {
+  console.log("");
+  console.log(pc.bold("Copiloto Cyber — analisis de prompt"));
+  console.log("");
+
+  if (findings.length === 0) {
+    console.log(pc.green("✅ No encontramos patrones de riesgo conocidos en este prompt."));
+    console.log(
+      pc.dim("(Esto es un chequeo heuristico, no una garantia: el codigo que se termine generando igual puede tener problemas.)"),
+    );
+    console.log("");
+    return;
+  }
+
+  for (const finding of findings) {
+    printPromptFinding(finding);
+  }
+
+  const counts = countBySeverity(findings);
+  console.log(pc.bold("Resumen:"));
+  console.log(
+    `  🔴 criticas: ${counts.critical}   🔴 altas: ${counts.high}   🟡 medias: ${counts.medium}   🟢 bajas: ${counts.low}`,
+  );
+  console.log("");
+}
+
+export function printPromptJsonReport(findings: Finding[]): void {
+  console.log(JSON.stringify({ findings }, null, 2));
 }
 
 function countBySeverity(findings: Finding[]): Record<Severity, number> {

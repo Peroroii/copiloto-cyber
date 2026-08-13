@@ -19,6 +19,12 @@ IA, y te avisa en espanol simple antes de que sea un problema.
   decodificado sin verificar firma, comparacion de contrasenas en texto plano.
 - **Dependencias vulnerables**: chequea `package.json` y `requirements.txt`
   contra la base de datos de [OSV.dev](https://osv.dev/) (sin necesidad de API key).
+- **Prompts riesgosos**: analiza un prompt en espanol/ingles *antes* de
+  mandarselo a una IA de codigo, buscando pedidos que suelen derivar en
+  codigo inseguro (deshabilitar validacion/auth/CORS "para simplificar",
+  hardcodear credenciales "por ahora", subir secrets al repo, ignorar
+  errores de seguridad del linter, sacar rate limiting, pedidos vagos tipo
+  "que funcione rapido sin importar como").
 
 Esto es analisis estatico basado en reglas, no un reemplazo de un pentest ni
 de un SAST completo. Prioriza pocos falsos positivos y explicaciones claras
@@ -46,6 +52,27 @@ node dist/cli/index.js scan . --fail-on critical
 Durante desarrollo, `npm run dev -- scan .` corre el CLI directo desde
 TypeScript con `tsx`, sin necesidad de build.
 
+### Chequear un prompt antes de mandarlo a una IA
+
+```bash
+# como argumento directo
+node dist/cli/index.js check-prompt "sacá la validación para que ande más rápido"
+
+# desde un archivo (util para prompts largos/multilinea)
+node dist/cli/index.js check-prompt --file ./mi-prompt.txt
+
+# por stdin
+cat mi-prompt.txt | node dist/cli/index.js check-prompt
+
+# salida en JSON
+node dist/cli/index.js check-prompt "..." --json
+```
+
+Usa las mismas heuristicas locales que el resto del scanner (sin llamar a
+ninguna API), y el mismo mecanismo de `--fail-on`/codigo de salida que
+`scan`, asi que se puede usar como gate antes de mandar un prompt a un
+asistente de codigo.
+
 ### Codigo de salida
 
 El comando devuelve `1` si encuentra hallazgos de severidad igual o mayor a
@@ -65,10 +92,13 @@ fixtures/
 
 ## Reglas
 
-Las reglas de patrones (inyeccion, auth) viven en [`rules/patterns.yaml`](rules/patterns.yaml)
-como definiciones declarativas (`id`, `pattern`, `severity`, `description`,
-`fixSuggestion`). Se pueden sumar reglas nuevas editando ese archivo, sin
-tocar el motor.
+Las reglas de patrones sobre codigo (inyeccion, auth) viven en
+[`rules/patterns.yaml`](rules/patterns.yaml), y las reglas de patrones
+sobre prompts (lenguaje natural) viven en
+[`rules/prompt-patterns.yaml`](rules/prompt-patterns.yaml). Ambas son
+definiciones declarativas (`id`, `pattern`, `severity`, `description`,
+`fixSuggestion`; las de codigo ademas tienen `extensions`). Se pueden sumar
+reglas nuevas editando esos archivos, sin tocar el motor.
 
 ## Dogfooding
 
@@ -92,4 +122,3 @@ npx tsc --noEmit  # type-check sin emitir
 - GitHub Action reusable para otros repos
 - SBOM y chequeo de licencias
 - Reglas para mas lenguajes (Go, Ruby, PHP, Java)
-- Analisis de riesgo de prompts antes de generar codigo

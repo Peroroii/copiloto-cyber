@@ -1,0 +1,164 @@
+# Reglas de patrones de riesgo en PROMPTS (lenguaje natural), no en codigo.
+# Se aplican sobre el texto que alguien esta por mandarle a una IA de codigo,
+# ANTES de que ese codigo exista. Cada regex se corre contra el texto en
+# minusculas y sin tildes (ver normalizeForMatch en promptScanner.ts), asi
+# que los patrones de aca abajo van sin acentos a proposito.
+#
+# A diferencia de rules/patterns.yaml, estas reglas no tienen `extensions`
+# (no aplica: no son archivos de codigo) ni dependen de coincidir una sola
+# palabra suelta: buscan combinaciones de verbo de accion (sacar, deshabilitar,
+# ignorar...) + concepto de seguridad, para no disparar con preguntas
+# legitimas como "por que no anda la validacion".
+rules:
+  - id: prompt-disable-validation
+    title: Pedido de deshabilitar validacion de datos
+    severity: medium
+    pattern: '(sacar?|quitar?|deshabilit\w*|desactiv\w*|saltear?|bypass\w*|ignorar?)\s+(la\s+|toda\s+la\s+)?validacion'
+    description: >-
+      El prompt pide sacar, deshabilitar o saltear la validacion de datos,
+      normalmente "para simplificar" o para ir mas rapido. El codigo
+      resultante va a aceptar cualquier input sin chequearlo, lo que suele
+      derivar en bugs, crashes o problemas de seguridad (injection, datos
+      corruptos).
+    fixSuggestion: >-
+      En vez de sacarla del todo, pedi una validacion minima y simple (ej.
+      "validá solo los campos obligatorios, sin agregar una libreria
+      externa") para no perder la proteccion basica.
+
+  - id: prompt-disable-auth
+    title: Pedido de deshabilitar o bypassear autenticacion
+    severity: critical
+    pattern: '(sacar?|quitar?|deshabilit\w*|desactiv\w*|bypass\w*|saltear?)\s+(el\s+|la\s+)?(auth\w*|autenticacion|login|autorizacion)|sin\s+(auth\w*|autenticacion|login)\b'
+    description: >-
+      El prompt pide sacar, deshabilitar o bypassear la autenticacion o el
+      login, tipicamente "por ahora" con la intencion de agregarla despues.
+      En la practica ese "despues" muchas veces nunca llega y el endpoint
+      queda expuesto sin ningun control de acceso.
+    fixSuggestion: >-
+      Pedi una autenticacion minima desde el arranque (ej. un check simple
+      de API key o sesion) en vez de dejar el endpoint completamente abierto,
+      aunque sea provisorio.
+
+  - id: prompt-open-cors
+    title: Pedido de CORS abierto a cualquier origen
+    severity: high
+    pattern: 'cors\b.{0,30}(abiert\w*|cualquier\s+origen)|access-control-allow-origin|permit\w*\s+cualquier\s+origen|origin.{0,10}["'']?\*'
+    description: >-
+      El prompt pide que la API acepte requests desde cualquier origen
+      (CORS abierto). Combinado con cookies o headers de autenticacion, esto
+      puede permitir que otros sitios lean respuestas de la API en nombre
+      del usuario.
+    fixSuggestion: >-
+      Pedi que el CORS se restrinja a una lista explicita de dominios
+      permitidos (ej. "permiti requests solo desde localhost:3000 y
+      miapp.com") en vez de abrirlo a todos.
+
+  - id: prompt-hardcode-credentials
+    title: Pedido de hardcodear credenciales "por ahora"
+    severity: critical
+    pattern: 'hardcode\w*.{0,40}(api[_\s-]?key|contrasena|password|token|credencial\w*)|(api[_\s-]?key|contrasena|password|token).{0,40}(directo\s+en\s+el\s+codigo|hardcode\w*)|por\s+ahora.{0,30}(directo\s+en\s+el\s+codigo|hardcode\w*)'
+    description: >-
+      El prompt pide poner una API key, contrasena o token directo en el
+      codigo "por ahora". Ese "por ahora" suele terminar commiteado a git,
+      y si el repo se sube o se comparte, la credencial queda expuesta.
+    fixSuggestion: >-
+      Pedi que la credencial se lea desde una variable de entorno (`.env`,
+      no commiteado) desde el primer momento; no cuesta mas que hardcodearla
+      y evita el problema de raiz.
+
+  - id: prompt-commit-secrets
+    title: Pedido de subir secrets o archivos de credenciales al repo
+    severity: critical
+    pattern: '(subi\w*|commite\w*|agrega\w*|sube\w*).{0,30}(\.env|secrets?|credenciales?).{0,30}(al\s+repo|a\s+git)|no\s+importa.{0,25}(quede|este).{0,20}(repo|git)'
+    description: >-
+      El prompt pide subir un archivo de secrets (`.env`, credenciales,
+      claves) al repositorio. Una vez commiteado, ese secret queda en el
+      historial de git aunque despues se borre el archivo, y hay que
+      rotarlo como si estuviera comprometido.
+    fixSuggestion: >-
+      Pedi que ese archivo se agregue a `.gitignore` y que las credenciales
+      se manejen por variables de entorno o un secret manager, nunca
+      commiteadas.
+
+  - id: prompt-ignore-security-lint
+    title: Pedido de ignorar errores de seguridad del linter o del CI
+    severity: high
+    pattern: '(ignora\w*|desactiv\w*|saltea\w*).{0,30}(errores?\s+de\s+seguridad|warnings?\s+de\s+seguridad|advertencias?\s+de\s+seguridad|eslint-security|linter\s+de\s+seguridad|security\s+lint)|que\s+no\s+falle\s+el\s+ci.{0,25}seguridad'
+    description: >-
+      El prompt pide ignorar o desactivar chequeos de seguridad del linter o
+      del pipeline de CI. Esos chequeos suelen existir justamente para
+      atrapar los patrones riesgosos que esta lista intenta prevenir;
+      apagarlos no arregla el problema, solo lo esconde.
+    fixSuggestion: >-
+      Pedi que se arregle el hallazgo puntual que reporta el linter, o que
+      se explique por que es un falso positivo, en vez de silenciar el
+      chequeo en general.
+
+  - id: prompt-vague-fast-unsafe
+    title: Pedido vago que prioriza velocidad sobre todo lo demas
+    severity: medium
+    pattern: '(que\s+funcione\s+)?como\s+sea\b|rapido\s+y\s+sucio|sin\s+importar\s+como|no\s+importa\s+(la\s+)?seguridad|prioriza\w*\s+velocidad\s+sobre\s+seguridad'
+    description: >-
+      El prompt pide que algo funcione "como sea" o priorice velocidad por
+      encima de todo, sin especificar restricciones. Este tipo de pedido
+      vago le da a la IA licencia implicita para tomar atajos inseguros
+      (sin validar, sin autenticar, sin sanitizar) con tal de que "ande".
+    fixSuggestion: >-
+      Se mas especifico sobre que se puede recortar y que no (ej. "podes
+      simplificar la UI, pero mantene la validacion de inputs y el
+      escapeo de HTML").
+
+  - id: prompt-disable-tls-verify
+    title: Pedido de desactivar verificacion de certificados TLS/SSL
+    severity: critical
+    pattern: '(ignora\w*|desactiv\w*|saltea\w*).{0,30}(certificado|ssl|tls)|rejectunauthorized\s*[:=]?\s*false|no\s+verifiques?\s+el\s+certificado'
+    description: >-
+      El prompt pide ignorar o desactivar la verificacion de certificados
+      TLS/SSL (por ejemplo `rejectUnauthorized: false`). Esto rompe la
+      proteccion contra ataques man-in-the-middle: cualquiera que intercepte
+      la conexion puede hacerse pasar por el servidor.
+    fixSuggestion: >-
+      Si el problema es un certificado self-signed en desarrollo, pedi que
+      se agregue esa CA especifica como confiable en vez de desactivar la
+      verificacion por completo (y nunca en produccion).
+
+  - id: prompt-plaintext-passwords
+    title: Pedido de guardar o comparar contrasenas sin hashear
+    severity: critical
+    pattern: '(guarda\w*|almacena\w*).{0,30}(contrasena|password).{0,30}(texto\s+plano|sin\s+hash)|no\s+hace\s+falta\s+hashear|sin\s+hashear\s+la\s+contrasena'
+    description: >-
+      El prompt pide guardar o comparar contrasenas en texto plano, sin
+      hashear. Si la base de datos se filtra, todas las contrasenas quedan
+      expuestas directamente, y como mucha gente reutiliza contrasenas,
+      el impacto se extiende mas alla de esta app.
+    fixSuggestion: >-
+      Pedi que las contrasenas se guarden hasheadas con bcrypt o argon2
+      desde el diseño inicial; no es mas trabajo que guardarlas en texto
+      plano y evita un problema grave despues.
+
+  - id: prompt-excessive-permissions
+    title: Pedido de otorgar permisos excesivos o sacar control de acceso
+    severity: high
+    pattern: '(dale|dar|otorga\w*).{0,20}(admin|permisos?\s+de\s+admin).{0,20}a\s+todos|cualquiera\s+pueda\s+acceder|sac\w*.{0,20}(chequeo|control)\s+de\s+(roles|permisos)'
+    description: >-
+      El prompt pide dar permisos de administrador a todos los usuarios, o
+      sacar el chequeo de roles/permisos. Esto elimina el control de acceso:
+      cualquier usuario autenticado (o no autenticado) podria hacer
+      operaciones que deberian estar restringidas.
+    fixSuggestion: >-
+      Pedi un esquema de roles minimo (aunque sea un solo rol "admin"
+      explicito) en vez de dar permisos amplios a todos por default.
+
+  - id: prompt-remove-rate-limit
+    title: Pedido de sacar rate limiting o proteccion contra fuerza bruta
+    severity: high
+    pattern: '(sacar?|quitar?|deshabilit\w*|desactiv\w*)\s+(el\s+|la\s+)?(rate\s*limit\w*|limite\s+de\s+intentos|limite\s+de\s+peticiones|proteccion\s+contra\s+fuerza\s+bruta)|rate\s*limit\w*.{0,20}(que\s+)?molesta'
+    description: >-
+      El prompt pide sacar el rate limiting o la proteccion contra fuerza
+      bruta, tipicamente porque "molesta durante testing". Sin ese limite,
+      un endpoint de login o de reseteo de contrasena queda expuesto a
+      ataques de fuerza bruta o credential stuffing.
+    fixSuggestion: >-
+      Pedi que el limite se relaje o desactive solo en el entorno de
+      testing (por variable de entorno o config), no que se saque del
+      codigo en general.

@@ -1,6 +1,6 @@
 export type Severity = "critical" | "high" | "medium" | "low";
 
-export type FindingCategory = "secret" | "injection" | "auth" | "dependency";
+export type FindingCategory = "secret" | "injection" | "auth" | "dependency" | "prompt";
 
 export interface Finding {
   ruleId: string;

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
 import { Command } from "commander";
 import { runScan } from "../core/scanner.js";
-import { printJsonReport, printTextReport } from "./reporter.js";
+import { PromptRulesEngine } from "../core/promptScanner.js";
+import { printJsonReport, printPromptJsonReport, printPromptReport, printTextReport } from "./reporter.js";
 import type { Severity } from "../core/types.js";
 
 const SEVERITY_RANK: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -42,6 +44,65 @@ program
     }
 
     const hasBlockingFinding = result.findings.some(
+      (finding) => SEVERITY_RANK[finding.severity] <= SEVERITY_RANK[failOn],
+    );
+    process.exitCode = hasBlockingFinding ? 1 : 0;
+  });
+
+program
+  .command("check-prompt")
+  .description("Analiza un prompt en busca de patrones de riesgo antes de mandarlo a una IA de codigo")
+  .argument("[texto]", "prompt a analizar (si se omite, usa --file o stdin)")
+  .option("--file <path>", "leer el prompt desde un archivo en vez de un argumento")
+  .option("--json", "salida en JSON en vez de texto", false)
+  .option(
+    "--fail-on <severity>",
+    `severidad minima que hace fallar el comando (${SEVERITY_VALUES.join("|")})`,
+    "high",
+  )
+  .action((texto: string | undefined, opts: { file?: string; json: boolean; failOn: string }) => {
+    const failOn = opts.failOn as Severity;
+    if (!SEVERITY_VALUES.includes(failOn)) {
+      console.error(`Valor invalido para --fail-on: "${opts.failOn}". Usa uno de: ${SEVERITY_VALUES.join(", ")}`);
+      process.exitCode = 2;
+      return;
+    }
+
+    let promptText: string;
+    if (texto !== undefined) {
+      promptText = texto;
+    } else if (opts.file) {
+      try {
+        promptText = readFileSync(opts.file, "utf-8");
+      } catch (error) {
+        console.error(`No se pudo leer el archivo "${opts.file}": ${(error as Error).message}`);
+        process.exitCode = 2;
+        return;
+      }
+    } else if (!process.stdin.isTTY) {
+      promptText = readFileSync(0, "utf-8");
+    } else {
+      console.error("Falta el prompt a analizar. Pasalo como argumento, con --file <path>, o por stdin.");
+      process.exitCode = 2;
+      return;
+    }
+
+    if (promptText.trim() === "") {
+      console.error("El prompt esta vacio.");
+      process.exitCode = 2;
+      return;
+    }
+
+    const engine = new PromptRulesEngine();
+    const findings = engine.scan(promptText);
+
+    if (opts.json) {
+      printPromptJsonReport(findings);
+    } else {
+      printPromptReport(findings);
+    }
+
+    const hasBlockingFinding = findings.some(
       (finding) => SEVERITY_RANK[finding.severity] <= SEVERITY_RANK[failOn],
     );
     process.exitCode = hasBlockingFinding ? 1 : 0;
